@@ -1,0 +1,41 @@
+cmake_minimum_required(VERSION 3.19)
+
+project(
+  gameboy VERSION 1.0
+  DESCRIPTION "gameboy emulator"
+  LANGUAGES CXX
+)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Find cairo
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CAIRO REQUIRED cairo)
+link_directories(${CAIRO_LIBRARY_DIRS})
+
+# Find SDL2
+find_package(SDL2 REQUIRED)
+
+# Target and compile options
+add_executable(
+  gameboy
+  src/main.cpp
+  src/gameboy.cpp
+  src/utils.cpp
+  src/cpu.cpp
+  src/mem.cpp
+  src/registers.cpp
+  src/ppu.cpp
+  src/display.cpp
+)
+
+target_compile_features(gameboy PRIVATE cxx_std_20)
+target_compile_options(gameboy PRIVATE -Wall -Wextra -Wpedantic)
+
+# Link cairo
+include_directories(${CAIRO_INCLUDE_DIRS})
+target_link_libraries(gameboy ${CAIRO_LIBRARIES})
+
+# Link SDL2
+include_directories(${SDL2_INCLUDE_DIRS})
+target_link_libraries(gameboy ${SDL2_LIBRARIES})
