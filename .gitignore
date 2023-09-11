@@ -1,0 +1,7 @@
+.DS_Store
+.cache/
+build/
+gbit/
+roms/boot_rom.gb
+roms/cpu_instrs.gb
+roms/dmg0_boot.bin
