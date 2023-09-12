@@ -3,10 +3,9 @@
 #include <_types/_uint16_t.h>
 #include <_types/_uint8_t.h>
 
-#include <memory>
 #include <vector>
 
-#include "../gbit/lib/tester.h"
+#include "../lib/tester.h"
 #include "mem.h"
 #include "registers.h"
 
@@ -39,7 +38,7 @@ class Instruction {
     DEC_C = 0x0D,
     LD_C_d8 = 0x0E,
     RRCA = 0x0F,
-    STOP = 0x1000,
+    STOP = 0x10,
     LD_DE_d16 = 0x11,
     LD_DE_A = 0x12,
     INC_DE = 0x13,
@@ -528,7 +527,7 @@ class Instruction {
 
   };
 
-  Instruction(uint8_t opcode, bool isPrefixed);
+  Instruction(uint16_t opcode, bool isPrefixed);
   Instruction(Type type) : type_(type){};
   Instruction(Type type, ArithmeticTarget target)
       : type_(type), arithmeticTarget_(target) {}
@@ -559,7 +558,7 @@ class CPU {
     }
   }
 
-  uint8_t executeInstruction(Instruction* instruction);
+  uint16_t executeInstruction(Instruction* instruction);
   void step();
   void setPC(uint16_t newPC) { PC = newPC; };
   uint16_t incrementPC() { return ++PC; };
@@ -572,11 +571,12 @@ class CPU {
   // Clock clock;
 
   uint16_t PC;
-  uint16_t SP;
+  uint16_t SP = 0;
   bool IME;
 
   // INSTRUCTIONS
   uint8_t add(uint8_t value);
+  uint8_t adc(uint8_t value);
   uint8_t sub(uint8_t value);
 
   void cp(uint8_t value);
@@ -586,6 +586,7 @@ class CPU {
 
   uint8_t rl(uint8_t& reg);
   uint8_t rr(uint8_t& reg);
+  uint8_t rrc(uint8_t& reg);
   uint8_t rlc(uint8_t& reg);
 
   uint8_t dec(uint8_t& reg);
@@ -593,61 +594,21 @@ class CPU {
 
   void bit(uint8_t value, uint8_t b);
 
-  uint16_t addCompoundRegisters(uint16_t a, uint16_t b) {
-    uint32_t temp = uint32_t(a) + uint32_t(b);
-    registers.F.subtraction = false;
-    registers.F.carry = temp > 0xFFFF;
-    registers.F.halfCarry = ((a & 0x0FFF) + (b & 0x0FFF)) > 0x0FFF;
-    registers.set_HL(temp & 0xFFFF);
-    return temp & 0xFFFF;
-  };
-
-  uint8_t xor_(uint8_t reg) {
-    registers.A ^= reg;
-    registers.F.carry = false;
-    registers.F.halfCarry = false;
-    registers.F.subtraction = false;
-    registers.F.zero = registers.A == 0;
-    return reg;
-  };
-
-  uint8_t or_(uint8_t reg) {
-    registers.A |= reg;
-    registers.F.zero = registers.A == 0;
-    registers.F.halfCarry = false;
-    registers.F.subtraction = false;
-    registers.F.carry = false;
-    return registers.A;
-  };
-
-  uint8_t and_(uint8_t reg) {
-    registers.A &= reg;
-    registers.F.zero = registers.A == 0;
-    registers.F.halfCarry = true;
-    registers.F.subtraction = false;
-    registers.F.carry = false;
-    return registers.A;
-  };
-
-  void rst(uint8_t addr) {
-    push(addr);
-    PC = uint16_t(addr);
-  };
+  uint16_t addCompoundRegisters(uint16_t a, uint16_t b);
+  uint8_t xor_(uint8_t reg);
+  uint8_t or_(uint8_t reg);
+  uint8_t and_(uint8_t reg);
+  void rst(uint8_t addr);
 
   bool inBootRom = true;
   bool halted = false;
-
-  int num_mem_accesses;
-  struct mem_access mem_accesses[16];
+  bool stopped = false;
 
   int cycles;
 };
 
 extern Memory g_Memory;
 extern CPU g_CPU;
-
-// Memory g_Memory;
-// CPU g_CPU(&g_Memory);
 
 /*
  * Called once during startup. The area of memory pointed to by
@@ -656,9 +617,8 @@ extern CPU g_CPU;
  */
 static void mycpu_init(size_t tester_instruction_mem_size,
                        uint8_t* tester_instruction_mem) {
-  for (size_t i = 0; i < tester_instruction_mem_size; ++i) {
-    g_CPU.memory->memory[i] = tester_instruction_mem[i];
-  }
+  g_CPU.memory->memory = tester_instruction_mem;
+  g_Memory.MEM_SIZE = tester_instruction_mem_size;
 }
 
 /*
@@ -667,12 +627,16 @@ static void mycpu_init(size_t tester_instruction_mem_size,
 static void mycpu_set_state(struct state* state) {
   (void)state;
 
-  g_CPU.num_mem_accesses = 0;
+  g_Memory.num_mem_accesses = 0;
 
-  g_CPU.registers.set_AF(state->reg16.AF);
-  g_CPU.registers.set_BC(state->reg16.BC);
-  g_CPU.registers.set_DE(state->reg16.DE);
-  g_CPU.registers.set_HL(state->reg16.HL);
+  g_CPU.registers.A = state->reg8.A;
+  g_CPU.registers.F.setValue(state->reg8.F);
+  g_CPU.registers.B = state->reg8.B;
+  g_CPU.registers.C = state->reg8.C;
+  g_CPU.registers.D = state->reg8.D;
+  g_CPU.registers.E = state->reg8.E;
+  g_CPU.registers.H = state->reg8.H;
+  g_CPU.registers.L = state->reg8.L;
 
   g_CPU.SP = state->SP;
   g_CPU.PC = state->PC;
@@ -680,16 +644,21 @@ static void mycpu_set_state(struct state* state) {
   g_CPU.halted = state->halted;
   g_CPU.IME = state->interrupts_master_enabled;
 
-  for (int i = 0; i < 16; ++i) g_CPU.mem_accesses[i] = state->mem_accesses[i];
+  for (int i = 0; i < 16; ++i)
+    g_Memory.mem_accesses[i] = state->mem_accesses[i];
 }
 
 static void mycpu_get_state(struct state* state) {
-  state->num_mem_accesses = g_CPU.num_mem_accesses;
+  state->num_mem_accesses = g_Memory.num_mem_accesses;
 
-  state->reg16.AF = g_CPU.registers.get_AF();
-  state->reg16.BC = g_CPU.registers.get_BC();
-  state->reg16.DE = g_CPU.registers.get_DE();
-  state->reg16.HL = g_CPU.registers.get_HL();
+  state->reg8.A = g_CPU.registers.A;
+  state->reg8.F = g_CPU.registers.F.getValue();
+  state->reg8.B = g_CPU.registers.B;
+  state->reg8.C = g_CPU.registers.C;
+  state->reg8.D = g_CPU.registers.D;
+  state->reg8.E = g_CPU.registers.E;
+  state->reg8.H = g_CPU.registers.H;
+  state->reg8.L = g_CPU.registers.L;
 
   state->SP = g_CPU.SP;
   state->PC = g_CPU.PC;
@@ -697,19 +666,11 @@ static void mycpu_get_state(struct state* state) {
   state->halted = g_CPU.halted;
   state->interrupts_master_enabled = g_CPU.IME;
 
-  for (int i = 0; i < 16; ++i) state->mem_accesses[i] = g_CPU.mem_accesses[i];
+  for (int i = 0; i < 16; ++i)
+    state->mem_accesses[i] = g_Memory.mem_accesses[i];
 }
 
 static int mycpu_step(void) {
   g_CPU.step();
   return g_CPU.cycles;
 }
-
-extern "C" {
-struct tester_operations test_ops = {
-    .init = mycpu_init,
-    .set_state = mycpu_set_state,
-    .get_state = mycpu_get_state,
-    .step = mycpu_step,
-};
-};

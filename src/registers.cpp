@@ -13,10 +13,10 @@ void FlagsRegister::setValue(uint8_t newValue) {
   // └-+> Zero
   //   └-> Half Carry
 
-  zero = newValueBits.test(0);
-  subtraction = newValueBits.test(1);
-  halfCarry = newValueBits.test(2);
-  carry = newValueBits.test(3);
+  zero = newValueBits.test(7);
+  subtraction = newValueBits.test(6);
+  halfCarry = newValueBits.test(5);
+  carry = newValueBits.test(4);
 
   value = newValue;
 }

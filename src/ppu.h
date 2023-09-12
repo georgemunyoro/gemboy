@@ -55,30 +55,30 @@ class PixelFetcher {
 class PPU {
  public:
   PPU(Memory* m) : memory(m), pixelFetcher(m) {
-    LCDC = m->memory + 0xFF40;
-    STAT = m->memory + 0xFF41;
+    // LCDC = m->memory + 0xFF40;
+    // STAT = m->memory + 0xFF41;
 
-    SCY = m->memory + 0xFF42;
-    SCX = m->memory + 0xFF43;
+    // SCY = m->memory + 0xFF42;
+    // SCX = m->memory + 0xFF43;
 
     LY = m->memory + 0xFF44;
-    LYC = m->memory + 0xFF45;
-    WX = m->memory + 0xFF4A;
-    WY = m->memory + 0xFF4B;
+    // LYC = m->memory + 0xFF45;
+    // WX = m->memory + 0xFF4A;
+    // WY = m->memory + 0xFF4B;
   };
 
   enum class State { OAM_SCAN, PIXEL_TRANSFER, H_BLANK, V_BLANK };
 
-  uint8_t* WX;
-  uint8_t* WY;
+  // uint8_t* WX;
+  // uint8_t* WY;
   uint8_t* LY;
 
-  uint8_t* LYC;
-  uint8_t* SCY;
-  uint8_t* SCX;
+  // uint8_t* LYC;
+  // uint8_t* SCY;
+  // uint8_t* SCX;
 
-  uint8_t* STAT;
-  uint8_t* LCDC;
+  // uint8_t* STAT;
+  // uint8_t* LCDC;
 
   uint8_t x;
   int ticks;

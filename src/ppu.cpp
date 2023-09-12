@@ -64,7 +64,8 @@ void PixelFetcher::start(uint16_t mapAddr, uint8_t tileLine) {
 
 void PPU::tick() {
   ++ticks;
-  printf("%d\n", *LY);
+
+  // getchar();
 
   switch (state) {
     case State::OAM_SCAN: {
@@ -74,8 +75,9 @@ void PPU::tick() {
 
       if (ticks == 40) {
         x = 0;
-        uint8_t tileLine = *LY % 8;
-        uint16_t tileMapRowAddr = 0x9800 + (uint16_t(*LY / 8) * 32);
+        uint8_t tileLine = memory->readByte(0xFF44) % 8;
+        uint16_t tileMapRowAddr =
+            0x9800 + (uint16_t(memory->readByte(0xFF44) / 8) * 32);
 
         pixelFetcher.start(tileMapRowAddr, tileLine);
 
@@ -105,11 +107,12 @@ void PPU::tick() {
       // A full scanline takes 456 ticks to complete. At the end of a
       // scanline, the PPU goes back to the initial OAM Search state.
       // When we reach line 144, we switch to VBlank state instead.
+      // printf("%3d H_BLANK\n", ticks);
 
       if (ticks == 456) {
         ticks = 0;
-        *LY = *LY + 1;
-        if (*LY == 144) {
+        ++memory->memory[0xFF44];
+        if (memory->memory[0xFF44] == 144) {
           display.vBlank();
           state = State::V_BLANK;
         } else {
@@ -121,12 +124,14 @@ void PPU::tick() {
     }
 
     case State::V_BLANK: {
+      printf("%3d V_BLANK %d\n", ticks, memory->readByte(0xFF44));
       // Wait ten more scanlines before starting over.
+      // getchar();
       if (ticks == 456) {
         ticks = 0;
-        *LY = *LY + 1;
-        if (*LY == 153) {
-          *LY = 0;
+        ++memory->memory[0xFF44];
+        if (memory->memory[0xFF44] == 153) {
+          memory->writeByte(0xFF44, 0);
           state = State::OAM_SCAN;
         }
       }
