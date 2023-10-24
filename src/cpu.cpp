@@ -30,21 +30,102 @@ uint16_t signedAdd(uint16_t a, uint8_t b) {
 uint16_t CPU::executeInstruction(Instruction *instruction) {
 #ifdef DEBUG_LOG
   printf(
-      "A:%02X F:%02X B:%02X C:%02X D:%02X E:%02X H:%02X L:%02X SP:%04X "
+      "IME=%d LY: %02X A:%02X F:%02X B:%02X C:%02X D:%02X E:%02X H:%02X L:%02X "
+      "SP:%04X "
       "PC:%04X "
       "PCMEM:%02X,%02X,%02X,%02X OP:%02X %s\n",
-      registers.A, registers.F.getValue(), registers.B, registers.C,
-      registers.D, registers.E, registers.H, registers.L, SP, PC,
-      memory->readByte(PC + 1), memory->readByte(PC + 2),
-      memory->readByte(PC + 3), memory->readByte(PC + 4), memory->readByte(PC),
+      IME ? 1 : 0, memory->readByte(0xFF44), registers.A,
+      registers.F.getValue(), registers.B, registers.C, registers.D,
+      registers.E, registers.H, registers.L, SP, PC, memory->readByte(PC + 1),
+      memory->readByte(PC + 2), memory->readByte(PC + 3),
+      memory->readByte(PC + 4), memory->readByte(PC),
       instruction->TypeRepr().c_str());
 #endif
+
+  if (((int)instruction->type() >> 8) == 0xCB) {
+    uint8_t opcode = (int)instruction->type();
+
+    uint8_t x = opcode >> 6;          // 1st octal digit (i.e. bits 7-6)
+    uint8_t y = (opcode >> 3) & 0x7;  // 2nd octal digit (i.e. bits 5-3)
+    uint8_t z = opcode & 0x7;         // 3rd octal digit (i.e. bits 2-0)
+
+    ArithmeticTarget target = (ArithmeticTarget)z;
+
+    updateHL_mem();
+
+    switch (x) {
+      case 0: {
+        switch (y) {
+          case 0:
+            rlc(*getTargetRef(target));
+            break;
+
+          case 1:
+            rrc(*getTargetRef(target));
+            break;
+
+          case 2:
+            rl(*getTargetRef(target));
+            break;
+
+          case 3:
+            rr(*getTargetRef(target));
+            break;
+
+          case 4:
+            sla(*getTargetRef(target));
+            break;
+
+          case 5:
+            sra(*getTargetRef(target));
+            break;
+
+          case 6:
+            swap(*getTargetRef(target));
+            break;
+
+          case 7:
+            srl(*getTargetRef(target));
+            break;
+        }
+
+        cycles += (target == HL ? 4 : 2);
+        break;
+      }
+
+      case 1: {
+        bit(*getTargetRef(target), y);
+        cycles += (target == HL ? 3 : 2);
+        break;
+      }
+
+      case 2: {
+        uint8_t *targetRef = getTargetRef(target);
+        *targetRef = *targetRef & (0xFF ^ (1 << y));
+        cycles += (target == HL ? 4 : 2);
+        break;
+      }
+
+      case 3: {
+        uint8_t *targetRef = getTargetRef(target);
+        *targetRef = *targetRef | (1 << y);
+        cycles += (target == HL ? 4 : 2);
+        break;
+      }
+    }
+
+    if (target == HL && x != 1) memory->writeByte(registers.get_HL(), HL_mem);
+
+    setPC(PC + 2);
+    return PC;
+  }
 
   switch (instruction->type()) {
     // Only advances the program counter by 1. Performs no other operations
     // that would have an effect.
     case Instruction::Type::NOP: {
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -59,14 +140,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_SP_d16: {
       SP = memory->readWord(PC + 1);
       setPC(PC + 3);
-      break;
-    }
-
-    // Take the logical exclusive-OR for each bit of the contents of register
-    // A and the contents of register A, and store the results in register A.
-    case Instruction::Type::XOR_A: {
-      xor_(registers.A);
-      incrementPC();
+      cycles += 3;
       break;
     }
 
@@ -74,6 +148,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_HL_d16: {
       registers.set_HL(memory->readWord(PC + 1));
       setPC(PC + 3);
+      cycles += 3;
       break;
     }
 
@@ -83,6 +158,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
       memory->writeByte(registers.get_HL(), registers.A);
       registers.set_HL(registers.get_HL() - 1);
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -90,7 +166,12 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // the program counter (PC). If not, the instruction following the current
     // JP instruction is executed (as usual).
     case Instruction::Type::JR_NZ_s8: {
-      if (!registers.F.zero) PC = signedAdd(PC, memory->readByte(PC + 1));
+      if (!registers.F.zero) {
+        PC = signedAdd(PC, memory->readByte(PC + 1));
+        ++cycles;
+      }
+
+      cycles += 2;
       setPC(PC + 2);
       break;
     }
@@ -99,6 +180,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_A_d8: {
       registers.A = memory->readByte(PC + 1);
       setPC(PC + 2);
+      cycles += 2;
       break;
     }
 
@@ -141,6 +223,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_C_d8: {
       registers.C = memory->readByte(PC + 1);
       setPC(PC + 2);
+      cycles += 2;
       break;
     }
 
@@ -150,6 +233,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_mem_C_A: {
       memory->writeByte(0xFF00 + registers.C, registers.A);
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -157,6 +241,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::INC_C: {
       inc(registers.C);
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -164,6 +249,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::INC_BC: {
       registers.set_BC(registers.get_BC() + 1);
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -172,6 +258,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_HL_A: {
       memory->writeByte(registers.get_HL(), registers.A);
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -180,14 +267,13 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // the 8-bit immediate operand a8.
     case Instruction::Type::LD_a8_A: {
       if (memory->readByte(PC + 1) == 0x50 && inBootRom) {
-        for (int i = 0; i <= 256; ++i) {
-          memory->writeByte(i, romData[i]);
-        }
+        for (int i = 0; i <= 256; ++i) memory->writeByte(i, romData[i]);
         inBootRom = false;
       }
 
       memory->writeByte(0xFF00 + memory->readByte(PC + 1), registers.A);
       setPC(PC + 2);
+      cycles += 3;
       break;
     }
 
@@ -195,20 +281,238 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_DE_d16: {
       registers.set_DE(memory->readWord(PC + 1));
       setPC(PC + 3);
+      cycles += 3;
       break;
     }
 
-    // Take the logical AND for each bit of the contents of register C and the
-    // contents of register A, and store the results in register A.
-    case Instruction::Type::AND_C: {
-      registers.A &= registers.C;
-
-      registers.F.zero = registers.A == 0;
-      registers.F.carry = false;
-      registers.F.halfCarry = true;
-      registers.F.subtraction = false;
-
+    case Instruction::Type::CP_A: {
+      cp(registers.A);
       incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::CP_B: {
+      cp(registers.B);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::CP_C: {
+      cp(registers.C);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::CP_D: {
+      cp(registers.D);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::CP_E: {
+      cp(registers.E);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::CP_H: {
+      cp(registers.H);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::CP_L: {
+      cp(registers.L);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::CP_HL: {
+      cp(memory->readByte(registers.get_HL()));
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::OR_A: {
+      or_(registers.A);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::OR_B: {
+      or_(registers.B);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::OR_C: {
+      or_(registers.C);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::OR_D: {
+      or_(registers.D);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::OR_E: {
+      or_(registers.E);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::OR_H: {
+      or_(registers.H);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::OR_L: {
+      or_(registers.L);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::OR_HL: {
+      or_(memory->readByte(registers.get_HL()));
+      incrementPC();
+      cycles += 2;
+      break;
+    }
+
+    case Instruction::Type::XOR_d8: {
+      xor_(memory->readByte(PC + 1));
+      setPC(PC + 2);
+      cycles += 2;
+      break;
+    }
+
+    case Instruction::Type::XOR_A: {
+      xor_(registers.A);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::XOR_B: {
+      xor_(registers.B);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::XOR_C: {
+      xor_(registers.C);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::XOR_D: {
+      xor_(registers.D);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::XOR_E: {
+      xor_(registers.E);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::XOR_H: {
+      xor_(registers.H);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::XOR_L: {
+      xor_(registers.L);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::XOR_HL: {
+      xor_(memory->readByte(registers.get_HL()));
+      incrementPC();
+      cycles += 2;
+      break;
+    }
+
+    case Instruction::Type::AND_A: {
+      and_(registers.A);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::AND_B: {
+      and_(registers.B);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::AND_C: {
+      and_(registers.C);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::AND_D: {
+      and_(registers.D);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::AND_E: {
+      and_(registers.E);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::AND_H: {
+      and_(registers.H);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::AND_L: {
+      and_(registers.L);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::AND_HL: {
+      and_(memory->readByte(registers.get_HL()));
+      incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -217,6 +521,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_A_DE: {
       registers.A = memory->readByte(registers.get_DE());
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -228,6 +533,59 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
       uint16_t a16 = memory->readWord(PC + 1);
       push(PC + 3);
       setPC(a16);
+      cycles += 6;
+      break;
+    }
+
+    case Instruction::Type::CALL_C_a16: {
+      if (registers.F.carry) {
+        uint16_t a16 = memory->readWord(PC + 1);
+        push(PC + 3);
+        setPC(a16);
+        cycles += 6;
+      } else {
+        setPC(PC + 3);
+        cycles += 3;
+      }
+      break;
+    }
+
+    case Instruction::Type::CALL_NC_a16: {
+      if (!registers.F.carry) {
+        uint16_t a16 = memory->readWord(PC + 1);
+        push(PC + 3);
+        setPC(a16);
+        cycles += 6;
+      } else {
+        setPC(PC + 3);
+        cycles += 3;
+      }
+      break;
+    }
+
+    case Instruction::Type::CALL_Z_a16: {
+      if (registers.F.zero) {
+        uint16_t a16 = memory->readWord(PC + 1);
+        push(PC + 3);
+        setPC(a16);
+        cycles += 6;
+      } else {
+        setPC(PC + 3);
+        cycles += 3;
+      }
+      break;
+    }
+
+    case Instruction::Type::CALL_NZ_a16: {
+      if (!registers.F.zero) {
+        uint16_t a16 = memory->readWord(PC + 1);
+        push(PC + 3);
+        setPC(a16);
+        cycles += 6;
+      } else {
+        setPC(PC + 3);
+        cycles += 3;
+      }
       break;
     }
 
@@ -614,10 +972,24 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // popping from the memory stack the program counter PC value that was
     // pushed to the stack when the subroutine was called.
     case Instruction::Type::RET_NC: {
-      if (!registers.F.carry)
+      if (!registers.F.carry) {
         PC = pop();
-      else
+        cycles += 5;
+      } else {
         incrementPC();
+        cycles += 2;
+      }
+      break;
+    }
+
+    case Instruction::Type::RET_C: {
+      if (registers.F.carry) {
+        PC = pop();
+        cycles += 5;
+      } else {
+        incrementPC();
+        cycles += 2;
+      }
       break;
     }
 
@@ -625,6 +997,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_B_d8: {
       registers.B = memory->readByte(PC + 1);
       setPC(PC + 2);
+      cycles += 2;
       break;
     }
 
@@ -632,6 +1005,14 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::PUSH_BC: {
       push(registers.get_BC());
       incrementPC();
+      cycles += 4;
+      break;
+    }
+
+    case Instruction::Type::PUSH_DE: {
+      push(registers.get_DE());
+      incrementPC();
+      cycles += 4;
       break;
     }
 
@@ -641,6 +1022,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
       rl(registers.A);
       registers.F.zero = false;
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -648,6 +1030,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::POP_BC: {
       registers.set_BC(pop());
       incrementPC();
+      cycles += 3;
       break;
     }
 
@@ -655,6 +1038,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::DEC_B: {
       dec(registers.B);
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -664,6 +1048,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
       memory->writeByte(registers.get_HL(), registers.A);
       registers.set_HL(registers.get_HL() + 1);
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -673,6 +1058,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
       registers.A = memory->readByte(registers.get_HL());
       registers.set_HL(registers.get_HL() + 1);
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -680,6 +1066,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::INC_HL: {
       registers.set_HL(registers.get_HL() + 1);
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -718,6 +1105,8 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
       break;
     }
 
+      // ---
+
     case Instruction::Type::LD_HL_L: {
       memory->writeByte(registers.get_HL(), registers.L);
       incrementPC();
@@ -729,6 +1118,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // subroutine was called, returning control to the source program.
     case Instruction::Type::RET: {
       PC = pop();
+      cycles += 4;
       break;
     }
 
@@ -736,6 +1126,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::INC_DE: {
       registers.set_DE(registers.get_DE() + 1);
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -743,6 +1134,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_A_E: {
       registers.A = registers.E;
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -750,18 +1142,9 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // immediate operand d8 by calculating A - d8, and set the Z flag if they
     // are equal.
     case Instruction::Type::CP_d8: {
-      // printf("CP d8=%04X A=%04X\n", memory->readByte(PC + 1), registers.A);
       cp(memory->readByte(PC + 1));
       setPC(PC + 2);
-      break;
-    }
-
-    // Compare the contents of memory specified by register pair HL and the
-    // contents of register A by calculating A - (HL), and set the Z flag if
-    // they are equal.
-    case Instruction::Type::CP_HL: {
-      cp(memory->readByte(registers.get_HL()));
-      incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -770,6 +1153,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_a16_A: {
       memory->writeByte(memory->readWord(PC + 1), registers.A);
       setPC(PC + 3);
+      cycles += 4;
       break;
     }
 
@@ -777,6 +1161,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::DEC_A: {
       dec(registers.A);
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -784,10 +1169,13 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // program counter (PC). If not, the instruction following the current JP
     // instruction is executed (as usual).
     case Instruction::Type::JR_Z_s8: {
-      if (registers.F.zero)
+      if (registers.F.zero) {
         PC += (int8_t)memory->readByte(PC + 1) + 2;
-      else
+        cycles += 3;
+      } else {
         setPC(PC + 2);
+        cycles += 2;
+      }
       break;
     }
 
@@ -795,6 +1183,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::DEC_C: {
       dec(registers.C);
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -802,6 +1191,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_L_d8: {
       registers.L = memory->readByte(PC + 1);
       setPC(PC + 2);
+      cycles += 2;
       break;
     }
 
@@ -809,6 +1199,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // relative.)
     case Instruction::Type::JR_s8: {
       PC = signedAdd(PC + 2, memory->readByte(PC + 1));
+      cycles += 2;
       break;
     }
 
@@ -851,16 +1242,12 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
           registers.F.carry = true;
         }
 
-        if (registers.F.halfCarry || (registers.A & 0x0f) > 0x09) {
+        if (registers.F.halfCarry || (registers.A & 0x0f) > 0x09)
           registers.A += 0x6;
-        }
+
       } else {
-        if (registers.F.carry) {
-          registers.A -= 0x60;
-        }
-        if (registers.F.halfCarry) {
-          registers.A -= 0x6;
-        }
+        if (registers.F.carry) registers.A -= 0x60;
+        if (registers.F.halfCarry) registers.A -= 0x6;
       }
 
       registers.F.zero = registers.A == 0;
@@ -884,22 +1271,22 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::JR_C_s8: {
       if (registers.F.carry) {
         PC = signedAdd(PC + 2, memory->readByte(PC + 1));
+        cycles += 3;
       } else {
         setPC(PC + 2);
+        cycles += 2;
       }
-
-      ++cycles;
       break;
     }
 
     case Instruction::Type::JR_NC_s8: {
       if (!registers.F.carry) {
         PC = signedAdd(PC + 2, memory->readByte(PC + 1));
+        cycles += 3;
       } else {
         setPC(PC + 2);
+        cycles += 2;
       }
-
-      ++cycles;
       break;
     }
 
@@ -907,6 +1294,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_H_A: {
       registers.H = registers.A;
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -914,6 +1302,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_H_B: {
       registers.H = registers.B;
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -921,6 +1310,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::INC_B: {
       inc(registers.B);
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -928,6 +1318,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_E_d8: {
       registers.E = memory->readByte(PC + 1);
       setPC(PC + 2);
+      cycles += 2;
       break;
     }
 
@@ -935,14 +1326,10 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // or mode register at the address in the range 0xFF00-0xFFFF specified by
     // the 8-bit immediate operand a8.
     case Instruction::Type::LD_A_a8: {
-      if (0xFF00 + (uint16_t)(memory->readByte(PC + 1)) == 0xFF44) {
-        registers.A = 0x90;
-      } else {
-        registers.A =
-            memory->readByte(0xFF00 + (uint16_t)memory->readByte(PC + 1));
-      }
-
+      registers.A =
+          memory->readByte(0xFF00 + (uint16_t)memory->readByte(PC + 1));
       setPC(PC + 2);
+      cycles += 3;
       break;
     }
 
@@ -950,6 +1337,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::DEC_E: {
       dec(registers.E);
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -957,6 +1345,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::DEC_H: {
       dec(registers.H);
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -964,6 +1353,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::DEC_L: {
       dec(registers.L);
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -971,6 +1361,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::INC_H: {
       inc(registers.H);
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -978,14 +1369,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_A_H: {
       registers.A = registers.H;
       incrementPC();
-      break;
-    }
-
-    // Subtract the contents of register B from the contents of register A,
-    // and store the results in register A.
-    case Instruction::Type::SUB_B: {
-      sub(registers.B);
-      incrementPC();
+      ++cycles;
       break;
     }
 
@@ -993,6 +1377,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::DEC_D: {
       dec(registers.D);
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -1000,6 +1385,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_D_d8: {
       registers.D = memory->readByte(PC + 1);
       setPC(PC + 2);
+      cycles += 2;
       break;
     }
 
@@ -1007,6 +1393,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_BC_d16: {
       registers.set_BC(memory->readWord(PC + 1));
       setPC(PC + 3);
+      cycles += 3;
       break;
     }
 
@@ -1014,6 +1401,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::LD_A_L: {
       registers.A = registers.L;
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -1021,6 +1409,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::PUSH_AF: {
       push(registers.get_AF());
       incrementPC();
+      cycles += 4;
       break;
     }
 
@@ -1029,6 +1418,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::ADD_A_HL: {
       add(memory->readByte(registers.get_HL()));
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -1037,8 +1427,8 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::ADD_HL_DE: {
       registers.set_HL(
           addCompoundRegisters(registers.get_HL(), registers.get_DE()));
-      cycles += 2;
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -1047,8 +1437,8 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::ADD_HL_BC: {
       registers.set_HL(
           addCompoundRegisters(registers.get_HL(), registers.get_BC()));
-      cycles += 2;
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -1057,8 +1447,8 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::ADD_HL_HL: {
       registers.set_HL(
           addCompoundRegisters(registers.get_HL(), registers.get_HL()));
-      cycles += 2;
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -1066,13 +1456,77 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // and store the results in register pair HL.
     case Instruction::Type::ADD_HL_SP: {
       registers.set_HL(addCompoundRegisters(registers.get_HL(), SP));
-      cycles += 2;
       incrementPC();
+      cycles += 2;
+      break;
+    }
+
+    case Instruction::Type::RST_0: {
+      rst(0x00);
+      cycles += 4;
+      break;
+    }
+
+    case Instruction::Type::RST_1: {
+      rst(0x08);
+      cycles += 4;
+      break;
+    }
+
+    case Instruction::Type::RST_2: {
+      rst(0x10);
+      cycles += 4;
+      break;
+    }
+
+    case Instruction::Type::RST_3: {
+      rst(0x18);
+      cycles += 4;
+      break;
+    }
+
+    case Instruction::Type::RST_4: {
+      rst(0x20);
+      cycles += 4;
+      break;
+    }
+
+    case Instruction::Type::RST_5: {
+      rst(0x28);
+      cycles += 4;
+      break;
+    }
+
+    case Instruction::Type::RST_6: {
+      rst(0x30);
+      cycles += 4;
       break;
     }
 
     case Instruction::Type::RST_7: {
       rst(0x38);
+      cycles += 4;
+      break;
+    }
+
+    case Instruction::Type::ADD_A_d8: {
+      add(memory->readByte(PC + 1));
+      setPC(PC + 2);
+      cycles += 2;
+      break;
+    }
+
+    case Instruction::Type::ADC_A_d8: {
+      adc(memory->readByte(PC + 1));
+      setPC(PC + 2);
+      cycles += 2;
+      break;
+    }
+
+    case Instruction::Type::SUB_d8: {
+      sub(memory->readByte(PC + 1));
+      setPC(PC + 2);
+      cycles += 2;
       break;
     }
 
@@ -1083,6 +1537,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
       uint16_t a16 = memory->readWord(PC + 1);
       memory->writeWord(a16, SP);
       setPC(PC + 3);
+      cycles += 5;
       break;
     }
 
@@ -1090,6 +1545,51 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // a16 specifies the address of the subsequently executed instruction.
     case Instruction::Type::JP_a16: {
       PC = memory->readWord(PC + 1);
+      cycles += 4;
+      break;
+    }
+
+    case Instruction::Type::JP_C_a16: {
+      if (registers.F.carry) {
+        PC = memory->readWord(PC + 1);
+        cycles += 4;
+      } else {
+        setPC(PC + 3);
+        cycles += 3;
+      }
+      break;
+    }
+
+    case Instruction::Type::JP_NC_a16: {
+      if (!registers.F.carry) {
+        PC = memory->readWord(PC + 1);
+        cycles += 4;
+      } else {
+        setPC(PC + 3);
+        cycles += 3;
+      }
+      break;
+    }
+
+    case Instruction::Type::JP_Z_a16: {
+      if (registers.F.zero) {
+        PC = memory->readWord(PC + 1);
+        cycles += 4;
+      } else {
+        setPC(PC + 3);
+        cycles += 3;
+      }
+      break;
+    }
+
+    case Instruction::Type::JP_NZ_a16: {
+      if (!registers.F.zero) {
+        PC = memory->readWord(PC + 1);
+        cycles += 4;
+      } else {
+        setPC(PC + 3);
+        cycles += 3;
+      }
       break;
     }
 
@@ -1098,6 +1598,14 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::DI: {
       IME = false;
       incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::EI: {
+      IME = true;
+      incrementPC();
+      ++cycles;
       break;
     }
 
@@ -1105,6 +1613,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::PUSH_HL: {
       push(registers.get_HL());
       incrementPC();
+      cycles += 4;
       break;
     }
 
@@ -1113,6 +1622,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::POP_HL: {
       registers.set_HL(pop());
       incrementPC();
+      cycles += 3;
       break;
     }
 
@@ -1121,6 +1631,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::POP_AF: {
       registers.set_AF(pop());
       incrementPC();
+      cycles += 3;
       break;
     }
 
@@ -1129,55 +1640,16 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::POP_DE: {
       registers.set_DE(pop());
       incrementPC();
+      cycles += 3;
       break;
     }
-
-      // Take the logical OR for each bit of the contents of register x and
-      // the contents of register A, and store the results in register A.
-
-    case Instruction::Type::OR_A: {
-      or_(registers.A);
-      incrementPC();
-      break;
-    }
-
-    case Instruction::Type::OR_B: {
-      or_(registers.B);
-      incrementPC();
-      break;
-    }
-
-    case Instruction::Type::OR_C: {
-      or_(registers.C);
-      incrementPC();
-      break;
-    }
-
-    case Instruction::Type::OR_D: {
-      or_(registers.D);
-      incrementPC();
-      break;
-    }
-
-    case Instruction::Type::OR_E: {
-      or_(registers.E);
-      incrementPC();
-      break;
-    }
-
-    case Instruction::Type::OR_L: {
-      or_(registers.L);
-      incrementPC();
-      break;
-    }
-
-    // ----
 
     // Load into register A the contents of the internal RAM or register
     // specified by the 16-bit immediate operand a16.
     case Instruction::Type::LD_A_a16: {
       registers.A = memory->readByte(memory->readWord(PC + 1));
       setPC(PC + 3);
+      cycles += 4;
       break;
     }
 
@@ -1185,8 +1657,8 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // register A.
     case Instruction::Type::LD_A_BC: {
       registers.A = memory->readByte(registers.get_BC());
-      cycles += 2;
       incrementPC();
+      cycles += 2;
       break;
     }
 
@@ -1196,6 +1668,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::AND_d8: {
       and_(memory->readByte(PC + 1));
       setPC(PC + 2);
+      cycles += 2;
       break;
     }
 
@@ -1203,40 +1676,40 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // register pair BC.
     case Instruction::Type::LD_BC_A: {
       memory->writeByte(registers.get_BC(), registers.A);
-      cycles += 2;
       incrementPC();
+      cycles += 2;
       break;
     }
 
     // Increment the contents of register pair SP by 1.
     case Instruction::Type::INC_SP: {
       ++SP;
-      cycles += 2;
       incrementPC();
+      cycles += 2;
       break;
     }
 
     // Increment the contents of register D by 1.
     case Instruction::Type::INC_D: {
       inc(registers.D);
-      ++cycles;
       incrementPC();
+      ++cycles;
       break;
     }
 
     // Increment the contents of register E by 1.
     case Instruction::Type::INC_E: {
       inc(registers.E);
-      ++cycles;
       incrementPC();
+      ++cycles;
       break;
     }
 
     // Increment the contents of register L by 1.
     case Instruction::Type::INC_L: {
       inc(registers.L);
-      ++cycles;
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -1249,8 +1722,8 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
       registers.F.subtraction = false;
       memory->writeByte(registers.get_HL(), data);
 
-      cycles += 3;
       incrementPC();
+      cycles += 3;
       break;
     }
 
@@ -1263,56 +1736,56 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
       registers.F.halfCarry = (data & 0xF) == 0xF;
       memory->writeByte(registers.get_HL(), data);
 
-      cycles += 3;
       incrementPC();
+      cycles += 3;
       break;
     }
 
     // Decrement the contents of register SP by 1
     case Instruction::Type::DEC_SP: {
       --SP;
-      cycles += 2;
       incrementPC();
+      cycles += 2;
       break;
     }
 
     // Decrement the contents of register DE by 1
     case Instruction::Type::DEC_DE: {
       registers.set_DE(registers.get_DE() - 1);
-      cycles += 2;
       incrementPC();
+      cycles += 2;
       break;
     }
 
     // Decrement the contents of register BC by 1
     case Instruction::Type::DEC_BC: {
       registers.set_BC(registers.get_BC() - 1);
-      cycles += 2;
       incrementPC();
+      cycles += 2;
       break;
     }
 
     // Decrement the contents of register HL by 1
     case Instruction::Type::DEC_HL: {
       registers.set_HL(registers.get_HL() - 1);
-      cycles += 2;
       incrementPC();
+      cycles += 2;
       break;
     }
 
     // Increment the contents of register A by 1.
     case Instruction::Type::INC_A: {
       inc(registers.A);
-      ++cycles;
       incrementPC();
+      ++cycles;
       break;
     }
 
     // Load the 8-bit immediate operand d8 into register H.
     case Instruction::Type::LD_H_d8: {
       registers.H = memory->readByte(PC + 1);
-      cycles += 2;
       setPC(PC + 2);
+      cycles += 2;
       break;
     }
 
@@ -1320,8 +1793,8 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     // specified by register pair HL.
     case Instruction::Type::LD_HL_d8: {
       memory->writeByte(registers.get_HL(), memory->readByte(PC + 1));
-      cycles += 3;
       setPC(PC + 2);
+      cycles += 3;
       break;
     }
 
@@ -1329,8 +1802,8 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::RRCA: {
       rrc(registers.A);
       registers.F.zero = false;
-      ++cycles;
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -1338,8 +1811,8 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::RLCA: {
       rlc(registers.A);
       registers.F.zero = false;
-      ++cycles;
       incrementPC();
+      ++cycles;
       break;
     }
 
@@ -1402,7 +1875,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
     case Instruction::Type::ADC_A_HL: {
       adc(memory->readByte(registers.get_HL()));
       incrementPC();
-      ++cycles;
+      cycles += 2;
       break;
     }
 
@@ -1464,24 +1937,215 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
       break;
     }
 
+    case Instruction::Type::SUB_A: {
+      sub(registers.A);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::SUB_B: {
+      sub(registers.B);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::SUB_C: {
+      sub(registers.C);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::SUB_D: {
+      sub(registers.D);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::SUB_E: {
+      sub(registers.E);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::SUB_H: {
+      sub(registers.H);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::SUB_L: {
+      sub(registers.L);
+      incrementPC();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::SUB_HL: {
+      sub(memory->readByte(registers.get_HL()));
+      cycles += 2;
+      incrementPC();
+      break;
+    }
+
+    case Instruction::Type::SBC_A_d8: {
+      sbc(memory->readByte(PC + 1));
+      setPC(PC + 2);
+      cycles += 2;
+      break;
+    }
+
+    case Instruction::Type::ADD_SP_s8: {
+      incrementPC();
+      uint8_t u_s8 = memory->readByte(PC);
+      int8_t off = (int8_t)u_s8;
+      uint32_t res = SP + off;
+      registers.F.zero = false;
+      registers.F.subtraction = false;
+      registers.F.halfCarry = (SP & 0xf) + (u_s8 & 0xf) > 0xf;
+      registers.F.carry = (SP & 0xff) + (u_s8 & 0xff) > 0xff;
+      SP = res;
+      incrementPC();
+      cycles += 4;
+      break;
+    }
+
+    case Instruction::Type::JP_HL: {
+      PC = registers.get_HL();
+      ++cycles;
+      break;
+    }
+
+    case Instruction::Type::SBC_A_A: {
+      sbc(registers.A);
+      ++cycles;
+      incrementPC();
+      break;
+    }
+
+    case Instruction::Type::SBC_A_B: {
+      sbc(registers.B);
+      ++cycles;
+      incrementPC();
+      break;
+    }
+
+    case Instruction::Type::SBC_A_C: {
+      sbc(registers.C);
+      ++cycles;
+      incrementPC();
+      break;
+    }
+
+    case Instruction::Type::SBC_A_D: {
+      sbc(registers.D);
+      ++cycles;
+      incrementPC();
+      break;
+    }
+
+    case Instruction::Type::SBC_A_E: {
+      sbc(registers.E);
+      ++cycles;
+      incrementPC();
+      break;
+    }
+
+    case Instruction::Type::SBC_A_H: {
+      sbc(registers.H);
+      ++cycles;
+      incrementPC();
+      break;
+    }
+
+    case Instruction::Type::SBC_A_L: {
+      sbc(registers.L);
+      ++cycles;
+      incrementPC();
+      break;
+    }
+
+    case Instruction::Type::SBC_A_HL: {
+      sbc(memory->readByte(registers.get_HL()));
+      cycles += 2;
+      incrementPC();
+      break;
+    }
+
+    case Instruction::Type::RET_Z: {
+      if (registers.F.zero) {
+        PC = pop();
+        cycles += 5;
+      } else {
+        incrementPC();
+        cycles += 2;
+      }
+      break;
+    }
+
+    case Instruction::Type::RET_NZ: {
+      if (!registers.F.zero) {
+        PC = pop();
+        cycles += 5;
+      } else {
+        incrementPC();
+        cycles += 2;
+      }
+      break;
+    }
+
+    case Instruction::Type::RETI: {
+      PC = pop();
+      IME = true;
+      cycles += 4;
+      break;
+    }
+
+    case Instruction::Type::LD_A_mem_C: {
+      registers.A = memory->readByte(0xFF00 + registers.C);
+      cycles += 2;
+      incrementPC();
+      break;
+    }
+
+    case Instruction::Type::OR_d8: {
+      or_(memory->readByte(PC + 1));
+      cycles += 2;
+      setPC(PC + 2);
+      break;
+    }
+
+    // Add the 8-bit signed operand s8 (values -128 to +127) to the stack
+    // pointer SP, and store the result in register pair HL.
+    case Instruction::Type::LD_HL_SP_inc_s8: {
+      incrementPC();
+      uint8_t u_s8 = memory->readByte(PC);
+      uint32_t res = (uint32_t)SP + (int8_t)u_s8;
+      registers.F.zero = false;
+      registers.F.subtraction = false;
+      registers.F.halfCarry = (SP & 0xf) + (u_s8 & 0xf) > 0xf;
+      registers.F.carry = (SP & 0xff) + (u_s8 & 0xff) > 0xff;
+      registers.set_HL((uint16_t)res);
+      incrementPC();
+      cycles += 3;
+      break;
+    }
+
+    case Instruction::Type::LD_SP_HL: {
+      SP = registers.get_HL();
+      cycles += 2;
+      incrementPC();
+      break;
+    }
+
       // =============================
       // === Prefixed instructions ===
       // =============================
-
-    // Copy the complement of the contents of bit 7 in register H to the Z
-    // flag of the program status word (PSW).
-    case Instruction::Type::BIT_7_H: {
-      bit(registers.H, 7);
-      setPC(PC + 2);
-      break;
-    }
-
-    // Rotate the contents of register C to the left.
-    case Instruction::Type::RL_C: {
-      rl(registers.C);
-      setPC(PC + 2);
-      break;
-    }
 
     default: {
       throw std::runtime_error(
@@ -1494,7 +2158,7 @@ uint16_t CPU::executeInstruction(Instruction *instruction) {
   return PC;
 }
 
-void CPU::step() {
+void CPU::tick() {
   uint16_t opcode = memory->readByte(PC);
 
   bool isPrefixed = opcode == 0xCB;
@@ -1522,6 +2186,18 @@ uint8_t CPU::add(uint8_t value) {
   return registers.A;
 }
 
+uint8_t CPU::sbc(uint8_t value) {
+  uint8_t res = registers.A - value - (registers.F.carry ? 1 : 0);
+  registers.F.zero = res == 0;
+  registers.F.subtraction = true;
+  registers.F.halfCarry =
+      ((s32)registers.A & 0xf) - (value & 0xf) - (registers.F.carry ? 1 : 0) <
+      0;
+  registers.F.carry = registers.A < value + (registers.F.carry ? 1 : 0);
+  registers.A = res;
+  return registers.A;
+}
+
 uint8_t CPU::adc(uint8_t value) {
   uint16_t n = registers.A + value + (registers.F.carry ? 1 : 0);
   registers.F.zero = (uint8_t)n == 0;
@@ -1544,7 +2220,7 @@ void CPU::cp(uint8_t value) {
 // store the results in register A.
 uint8_t CPU::sub(uint8_t value) {
   cp(value);
-  registers.A -= registers.B;
+  registers.A -= value;
   return registers.A;
 }
 
@@ -1605,6 +2281,42 @@ uint8_t CPU::rlc(uint8_t &reg) {
   reg <<= 1;
   if (registers.F.carry) reg |= 0x1;
   registers.F.zero = reg == 0;
+  return reg;
+}
+
+uint8_t CPU::sla(uint8_t &reg) {
+  registers.F.carry = (reg & (1 << 7)) != 0;
+  reg <<= 1;
+  registers.F.zero = reg == 0;
+  registers.F.halfCarry = false;
+  registers.F.subtraction = false;
+  return reg;
+}
+
+uint8_t CPU::sra(uint8_t &reg) {
+  registers.F.carry = (reg & 0x1) != 0;
+  reg = ((reg & (1 << 7)) | (reg >> 1));
+  registers.F.zero = reg == 0;
+  registers.F.halfCarry = false;
+  registers.F.subtraction = false;
+  return reg;
+}
+
+uint8_t CPU::swap(uint8_t &reg) {
+  registers.F.zero = reg == 0;
+  registers.F.carry = false;
+  registers.F.halfCarry = false;
+  registers.F.subtraction = false;
+  reg = (reg << 4) | (reg >> 4);
+  return reg;
+}
+
+uint8_t CPU::srl(uint8_t &reg) {
+  registers.F.carry = (reg & 0x1) != 0;
+  reg >>= 1;
+  registers.F.zero = reg == 0;
+  registers.F.halfCarry = false;
+  registers.F.subtraction = false;
   return reg;
 }
 
@@ -1669,7 +2381,7 @@ uint8_t CPU::and_(uint8_t reg) {
 };
 
 void CPU::rst(uint8_t addr) {
-  push(addr);
+  push(PC + 1);
   PC = uint16_t(addr);
 };
 
@@ -2193,7 +2905,7 @@ Instruction::Instruction(uint16_t opcode, bool isPrefixed) {
       case (int)Type::SET_7_L:
       case (int)Type::SET_7_HL:
       case (int)Type::SET_7_A:
-        type_ = (Type)opcode;
+        type_ = (Type)(0xCB00 | opcode);
         break;
 
       default: {
@@ -2221,6 +2933,8 @@ std::string Instruction::ArithmeticTargetRepr() {
       return "H";
     case L:
       return "L";
+    case HL:
+      return "HL";
   }
 }
 

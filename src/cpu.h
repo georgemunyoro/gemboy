@@ -6,18 +6,11 @@
 #include <vector>
 
 #include "../lib/tester.h"
+#include "events.h"
 #include "mem.h"
 #include "registers.h"
 
-enum ArithmeticTarget {
-  A,
-  B,
-  C,
-  D,
-  E,
-  H,
-  L,
-};
+enum ArithmeticTarget { B, C, D, E, H, L, HL, A };
 
 class Instruction {
  public:
@@ -550,23 +543,55 @@ struct Clock {
 
 class CPU {
  public:
-  CPU(Memory* m) : memory(m){};
+  CPU(Memory *m) : memory(m){};
 
-  void setRomData(std::vector<uint8_t>& rd) {
+  uint8_t HL_mem;
+
+  uint8_t *getTargetRef(ArithmeticTarget target) {
+    switch (target) {
+      case B:
+        return &registers.B;
+
+      case C:
+        return &registers.C;
+
+      case D:
+        return &registers.D;
+
+      case E:
+        return &registers.E;
+
+      case H:
+        return &registers.H;
+
+      case L:
+        return &registers.L;
+
+      case HL:
+        return &HL_mem;
+
+      case A:
+        return &registers.A;
+    }
+  }
+
+  void updateHL_mem() { HL_mem = memory->readByte(registers.get_HL()); }
+
+  void setRomData(std::vector<uint8_t> &rd) {
     for (int i = 0; i <= 256; ++i) {
       romData.push_back(rd[i]);
     }
   }
 
-  uint16_t executeInstruction(Instruction* instruction);
-  void step();
+  uint16_t executeInstruction(Instruction *instruction);
+  void tick();
   void setPC(uint16_t newPC) { PC = newPC; };
   uint16_t incrementPC() { return ++PC; };
   uint16_t getPC() { return PC; };
   Registers registers;
 
   //  private:
-  Memory* memory;
+  Memory *memory;
   std::vector<uint8_t> romData;
   // Clock clock;
 
@@ -578,27 +603,26 @@ class CPU {
   uint8_t add(uint8_t value);
   uint8_t adc(uint8_t value);
   uint8_t sub(uint8_t value);
-
+  uint8_t sbc(uint8_t value);
+  uint8_t sla(uint8_t &reg);
+  uint8_t sra(uint8_t &reg);
+  uint8_t swap(uint8_t &reg);
+  uint8_t srl(uint8_t &reg);
   void cp(uint8_t value);
-
-  void push(uint16_t value);
   uint16_t pop();
-
-  uint8_t rl(uint8_t& reg);
-  uint8_t rr(uint8_t& reg);
-  uint8_t rrc(uint8_t& reg);
-  uint8_t rlc(uint8_t& reg);
-
-  uint8_t dec(uint8_t& reg);
-  uint8_t inc(uint8_t& reg);
-
-  void bit(uint8_t value, uint8_t b);
-
-  uint16_t addCompoundRegisters(uint16_t a, uint16_t b);
+  void push(uint16_t value);
+  uint8_t rl(uint8_t &reg);
+  uint8_t rr(uint8_t &reg);
+  uint8_t rrc(uint8_t &reg);
+  uint8_t rlc(uint8_t &reg);
+  uint8_t dec(uint8_t &reg);
+  uint8_t inc(uint8_t &reg);
   uint8_t xor_(uint8_t reg);
   uint8_t or_(uint8_t reg);
   uint8_t and_(uint8_t reg);
   void rst(uint8_t addr);
+  void bit(uint8_t value, uint8_t b);
+  uint16_t addCompoundRegisters(uint16_t a, uint16_t b);
 
   bool inBootRom = true;
   bool halted = false;
@@ -612,11 +636,12 @@ extern CPU g_CPU;
 
 /*
  * Called once during startup. The area of memory pointed to by
- * tester_instruction_mem will contain instructions the tester will inject, and
- * should be mapped read-only at addresses [0,tester_instruction_mem_size).
+ * tester_instruction_mem will contain instructions the tester will inject,
+ * and should be mapped read-only at addresses
+ * [0,tester_instruction_mem_size).
  */
 static void mycpu_init(size_t tester_instruction_mem_size,
-                       uint8_t* tester_instruction_mem) {
+                       uint8_t *tester_instruction_mem) {
   g_CPU.memory->memory = tester_instruction_mem;
   g_Memory.MEM_SIZE = tester_instruction_mem_size;
 }
@@ -624,7 +649,7 @@ static void mycpu_init(size_t tester_instruction_mem_size,
 /*
  * Resets the CPU state (e.g., registers) to a given state state.
  */
-static void mycpu_set_state(struct state* state) {
+static void mycpu_set_state(struct state *state) {
   (void)state;
 
   g_Memory.num_mem_accesses = 0;
@@ -648,7 +673,7 @@ static void mycpu_set_state(struct state* state) {
     g_Memory.mem_accesses[i] = state->mem_accesses[i];
 }
 
-static void mycpu_get_state(struct state* state) {
+static void mycpu_get_state(struct state *state) {
   state->num_mem_accesses = g_Memory.num_mem_accesses;
 
   state->reg8.A = g_CPU.registers.A;
@@ -671,6 +696,48 @@ static void mycpu_get_state(struct state* state) {
 }
 
 static int mycpu_step(void) {
-  g_CPU.step();
+  g_CPU.tick();
   return g_CPU.cycles;
 }
+
+static int CYCLES_PER_INSTRUCTION[] = {
+    /*
+    0    1  2   3   4   5   6   7    8  9   a   b  c   d   e  f   */
+    4,  12, 8,  8,  4,  4,  8,  4,  20, 8,  8,  8, 4,  4,  8, 4,  /* 0 */
+    4,  12, 8,  8,  4,  4,  8,  4,  12, 8,  8,  8, 4,  4,  8, 4,  /* 1 */
+    8,  12, 8,  8,  4,  4,  8,  4,  8,  8,  8,  8, 4,  4,  8, 4,  /* 2 */
+    8,  12, 8,  8,  12, 12, 12, 4,  8,  8,  8,  8, 4,  4,  8, 4,  /* 3 */
+    4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4, 4,  4,  8, 4,  /* 4 */
+    4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4, 4,  4,  8, 4,  /* 5 */
+    4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4, 4,  4,  8, 4,  /* 6 */
+    8,  8,  8,  8,  8,  8,  4,  8,  4,  4,  4,  4, 4,  4,  8, 4,  /* 7 */
+    4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4, 4,  4,  8, 4,  /* 8 */
+    4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4, 4,  4,  8, 4,  /* 9 */
+    4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4, 4,  4,  8, 4,  /* a */
+    4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4, 8,  4,  8, 4,  /* b */
+    8,  12, 12, 16, 12, 16, 8,  16, 8,  16, 12, 0, 12, 24, 8, 16, /* c */
+    8,  12, 12, 4,  12, 16, 8,  16, 8,  16, 12, 4, 12, 4,  8, 16, /* d */
+    12, 12, 8,  4,  4,  16, 8,  16, 16, 4,  16, 4, 4,  4,  8, 16, /* e */
+    12, 12, 8,  4,  4,  16, 8,  16, 12, 8,  16, 4, 0,  4,  8, 16, /* f */
+};
+
+static int CYCLES_PER_INSTRUCTION_CB[] = {
+    /*
+    0  1  2  3  4  5  6   7  8  9  a  b  c  d   e  f  */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* 0 */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* 1 */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* 2 */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* 3 */
+    8, 8, 8, 8, 8, 8, 12, 8, 8, 8, 8, 8, 8, 8, 12, 8, /* 4 */
+    8, 8, 8, 8, 8, 8, 12, 8, 8, 8, 8, 8, 8, 8, 12, 8, /* 5 */
+    8, 8, 8, 8, 8, 8, 12, 8, 8, 8, 8, 8, 8, 8, 12, 8, /* 6 */
+    8, 8, 8, 8, 8, 8, 12, 8, 8, 8, 8, 8, 8, 8, 12, 8, /* 7 */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* 8 */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* 9 */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* a */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* b */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* c */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* d */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* e */
+    8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 16, 8, /* f */
+};

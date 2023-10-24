@@ -3,11 +3,47 @@
 
 #include <_types/_uint16_t.h>
 #include <_types/_uint8_t.h>
+#include <sys/_types/_int16_t.h>
+#include <sys/_types/_int8_t.h>
+
+#include <bitset>
+
+#include "mem.h"
+
+void PixelFetcher::readTileLine(uint8_t bitPlane, uint16_t tileDataAddr,
+                                uint8_t tileId, bool signedId, uint8_t tileLine,
+                                uint flags, uint8_t *data[8]) {
+  uint16_t offset =
+      signedId ? uint16_t(int16_t(tileDataAddr) + int16_t(int8_t(tileId)) * 16)
+               : tileDataAddr + (uint16_t(tileId) * 16);
+
+  if ((flags & spriteFlipY) != 0) {
+    auto height =
+        uint8(8 << ((vram.getLCDC() & vram.getSpriteSize()) >> 2) - 1);
+    auto tileLine = height - tileLine;
+  }
+}
 
 void PixelFetcher::tick() {
   ++ticks;
+
   if (ticks < 2) return;
+
   ticks = 0;
+
+  /*
+    TILE_SEL	VRAM Range
+    0	$8800 - $97FF
+    1	$8000 - $8FFF (OBJ area)
+  */
+  std::bitset<8> LCDC = std::bitset<8>(memory->readByte(0xFF40));
+  int TILE_SEL = LCDC.test(4);
+  uint16_t vramRange = TILE_SEL == 0 ? 0x8800 : 0x8000;
+
+  uint8_t LY = memory->memory[0xFF44];
+  uint8_t LX = tileIndex;
+  uint8_t SCY = memory->memory[0xFF42];
+  uint8_t SCX = memory->memory[0xFF43];
 
   switch (state) {
     case State::READ_TILE_ID: {
@@ -17,7 +53,7 @@ void PixelFetcher::tick() {
     }
 
     case State::READ_TILE_DATA_0: {
-      int offset = 0x8000 + (uint16_t(tileId) * 16);
+      int offset = vramRange + (uint16_t(tileId) * 16);
       int addr = offset + (uint16_t(tileLine) * 2);
       int data = memory->readByte(addr);
       for (unsigned int i = 0; i <= 7; ++i) {
@@ -65,7 +101,9 @@ void PixelFetcher::start(uint16_t mapAddr, uint8_t tileLine) {
 void PPU::tick() {
   ++ticks;
 
-  // getchar();
+  if (memory->readByte(0xFF44) == memory->readByte(0xFF45)) {
+    memory->writeByte(0xFF0F, memory->readByte(0xFF0F) | 0x2);
+  }
 
   switch (state) {
     case State::OAM_SCAN: {
@@ -75,9 +113,10 @@ void PPU::tick() {
 
       if (ticks == 40) {
         x = 0;
-        uint8_t tileLine = memory->readByte(0xFF44) % 8;
-        uint16_t tileMapRowAddr =
-            0x9800 + (uint16_t(memory->readByte(0xFF44) / 8) * 32);
+        int y = memory->readByte(0xFF42) + memory->readByte(0xFF44);
+
+        uint8_t tileLine = y % 8;
+        uint16_t tileMapRowAddr = 0x9800 + (uint16_t((y % 256) / 8) * 32);
 
         pixelFetcher.start(tileMapRowAddr, tileLine);
 
@@ -92,7 +131,11 @@ void PPU::tick() {
 
       if (!pixelFetcher.fifo.isEmpty()) {
         uint8_t pixelColor = pixelFetcher.fifo.pop();
-        display.write(pixelColor);
+
+        auto paletteColor =
+            (memory->readByte(0xFF47) >> ((uint8_t)pixelColor * 2)) & 3;
+
+        display.write(paletteColor);
         ++x;
       }
 
@@ -114,6 +157,9 @@ void PPU::tick() {
         ++memory->memory[0xFF44];
         if (memory->memory[0xFF44] == 144) {
           display.vBlank();
+
+          memory->writeByte(0xFF0F, memory->readByte(0xFF0F) | 0x1);
+
           state = State::V_BLANK;
         } else {
           state = State::OAM_SCAN;
@@ -124,7 +170,7 @@ void PPU::tick() {
     }
 
     case State::V_BLANK: {
-      printf("%3d V_BLANK %d\n", ticks, memory->readByte(0xFF44));
+      // printf("%3d V_BLANK %d\n", ticks, memory->readByte(0xFF44));
       // Wait ten more scanlines before starting over.
       // getchar();
       if (ticks == 456) {

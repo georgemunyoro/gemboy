@@ -1,5 +1,6 @@
 #pragma once
 
+#include <_types/_uint64_t.h>
 #include <_types/_uint8_t.h>
 
 #include <cstddef>
@@ -27,7 +28,7 @@ class PixelFIFO {
 
 class PixelFetcher {
  public:
-  PixelFetcher(Memory* m) : memory(m){};
+  PixelFetcher(Memory* m) : memory(m), vram(m){};
 
   enum class State {
     READ_TILE_ID,
@@ -36,10 +37,13 @@ class PixelFetcher {
     PUSH_TO_FIFO
   };
 
+  PixelFIFO fifo;
+
   void start(uint16_t tileMapRowAddr, uint8_t tileLine);
   void tick();
-
-  PixelFIFO fifo;
+  void readTileLine(uint8_t bitPlane, uint16_t tileDataAddr, uint8_t tileId,
+                    bool signedId, uint8_t tileLine, uint flags,
+                    uint8_t* data[8]);
 
  private:
   State state;
@@ -50,35 +54,20 @@ class PixelFetcher {
   int tileIndex;
   int tileId;
   uint8_t pixelData[8];
+  uint8_t LX;
+  VRAM vram;
 };
 
 class PPU {
  public:
-  PPU(Memory* m) : memory(m), pixelFetcher(m) {
-    // LCDC = m->memory + 0xFF40;
-    // STAT = m->memory + 0xFF41;
+  PPU(Memory* m)
+      : memory(m),
+        pixelFetcher(m),
+        vram(m){
 
-    // SCY = m->memory + 0xFF42;
-    // SCX = m->memory + 0xFF43;
-
-    LY = m->memory + 0xFF44;
-    // LYC = m->memory + 0xFF45;
-    // WX = m->memory + 0xFF4A;
-    // WY = m->memory + 0xFF4B;
-  };
+        };
 
   enum class State { OAM_SCAN, PIXEL_TRANSFER, H_BLANK, V_BLANK };
-
-  // uint8_t* WX;
-  // uint8_t* WY;
-  uint8_t* LY;
-
-  // uint8_t* LYC;
-  // uint8_t* SCY;
-  // uint8_t* SCX;
-
-  // uint8_t* STAT;
-  // uint8_t* LCDC;
 
   uint8_t x;
   int ticks;
@@ -87,6 +76,8 @@ class PPU {
 
   void tick();
   Display display;
+
+  VRAM vram;
 
  private:
   Memory* memory;

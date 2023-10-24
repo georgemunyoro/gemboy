@@ -27,6 +27,7 @@ add_executable(
   src/registers.cpp
   src/ppu.cpp
   src/display.cpp
+  src/timer.cpp
 )
 
 target_compile_features(gameboy PRIVATE cxx_std_20)
